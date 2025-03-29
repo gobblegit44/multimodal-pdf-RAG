@@ -57,19 +57,39 @@ def setup_rag_system(text_chunks):
     """
     Set up the RAG system with the extracted text.
     """
-    EMBEDDING_MODEL = 'hf.co/CompendiumLabs/bge-base-en-v1.5-gguf'
-    LANGUAGE_MODEL = 'hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF'
+    # Using Ollama's nomic-embed-text model for embeddings and llama2 for chat
+    EMBEDDING_MODEL = 'nomic-embed-text'
+    LANGUAGE_MODEL = 'llama2'
     
     VECTOR_DB = []
     
     def add_chunk_to_database(chunk):
-        embedding = ollama.embed(model=EMBEDDING_MODEL, input=chunk)['embeddings'][0]
-        VECTOR_DB.append((chunk, embedding))
+        try:
+            embedding = ollama.embed(model=EMBEDDING_MODEL, input=chunk)['embeddings'][0]
+            VECTOR_DB.append((chunk, embedding))
+        except Exception as e:
+            print(f"Error getting embedding for chunk: {str(e)}")
+            print("Make sure Ollama is running and the model is pulled. Try running: ollama pull nomic-embed-text")
     
     # Split text into chunks and add to database
-    for i, chunk in enumerate(text_chunks):
-        add_chunk_to_database(chunk)
-        print(f'Added chunk {i+1}/{len(text_chunks)} to the database')
+    # Process chunks in batches for better organization
+    batch_size = 10
+    total_batches = (len(text_chunks) + batch_size - 1) // batch_size
+    
+    for batch_num in range(total_batches):
+        start_idx = batch_num * batch_size
+        end_idx = min(start_idx + batch_size, len(text_chunks))
+        current_batch = text_chunks[start_idx:end_idx]
+        
+        print(f'\nProcessing batch {batch_num + 1}/{total_batches}:')
+        for i, chunk in enumerate(current_batch):
+            # Skip empty chunks
+            if not chunk.strip():
+                continue
+                
+            # Add meaningful chunks to database
+            add_chunk_to_database(chunk)
+            print(f'  Added chunk {start_idx + i + 1}/{len(text_chunks)} to the database')
     
     return VECTOR_DB, EMBEDDING_MODEL, LANGUAGE_MODEL
 
@@ -100,58 +120,64 @@ def process_query(query, VECTOR_DB, EMBEDDING_MODEL, LANGUAGE_MODEL):
     """
     Process a user query and generate a response.
     """
-    # First, identify distinct topics and generate search queries
-    topic_identification_prompt = '''You are a helpful assistant. Based on the user's question, identify the distinct topics/aspects that need to be addressed and generate a separate search query for each one. Format your response as a list of search queries, one per line. Only output the search queries, nothing else.'''
-    
-    query_response = ollama.chat(
-        model=LANGUAGE_MODEL,
-        messages=[
-            {'role': 'system', 'content': topic_identification_prompt},
-            {'role': 'user', 'content': query},
-        ]
-    )
-    
-    search_queries = query_response['message']['content'].strip().split('\n')
-    print('\nGenerated search queries:')
-    for q in search_queries:
-        print(f' - {q}')
-    
-    # Retrieve knowledge for each search query
-    all_retrieved_knowledge = []
-    for q in search_queries:
-        retrieved = retrieve(q, VECTOR_DB, EMBEDDING_MODEL)
-        all_retrieved_knowledge.extend(retrieved)
-    
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_retrieved_knowledge = []
-    for chunk, similarity in all_retrieved_knowledge:
-        if chunk not in seen:
-            seen.add(chunk)
-            unique_retrieved_knowledge.append((chunk, similarity))
-    
-    print('\nRetrieved knowledge:')
-    for chunk, similarity in unique_retrieved_knowledge:
-        print(f' - (similarity: {similarity:.2f}) {chunk}')
-    
-    # Generate response
-    instruction_prompt = f'''You are a helpful chatbot.
-    Use only the following pieces of context to answer the question. Make sure to address all aspects of the question. Don't make up any new information:
-    {'\n'.join([f' - {chunk}' for chunk, similarity in unique_retrieved_knowledge])}
-    '''
-    
-    stream = ollama.chat(
-        model=LANGUAGE_MODEL,
-        messages=[
-            {'role': 'system', 'content': instruction_prompt},
-            {'role': 'user', 'content': query},
-        ],
-        stream=True,
-    )
-    
-    print('\nChatbot response:')
-    for chunk in stream:
-        print(chunk['message']['content'], end='', flush=True)
+    try:
+        # First, identify distinct topics and generate search queries
+        topic_identification_prompt = '''You are a helpful assistant. Based on the user's question, identify the distinct topics/aspects that need to be addressed and generate a separate search query for each one. Format your response as a list of search queries, one per line. Only output the search queries, nothing else.'''
+        
+        query_response = ollama.chat(
+            model=LANGUAGE_MODEL,
+            messages=[
+                {'role': 'system', 'content': topic_identification_prompt},
+                {'role': 'user', 'content': query},
+            ]
+        )
+        
+        search_queries = query_response['message']['content'].strip().split('\n')
+        print('\nGenerated search queries:')
+        for q in search_queries:
+            print(f' - {q}')
+        
+        # Retrieve knowledge for each search query
+        all_retrieved_knowledge = []
+        for q in search_queries:
+            retrieved = retrieve(q, VECTOR_DB, EMBEDDING_MODEL)
+            all_retrieved_knowledge.extend(retrieved)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_retrieved_knowledge = []
+        for chunk, similarity in all_retrieved_knowledge:
+            if chunk not in seen:
+                seen.add(chunk)
+                unique_retrieved_knowledge.append((chunk, similarity))
+        
+        print('\nRetrieved knowledge:')
+        for chunk, similarity in unique_retrieved_knowledge:
+            print(f' - (similarity: {similarity:.2f}) {chunk}')
+        
+        # Generate response
+        instruction_prompt = f'''You are a helpful chatbot.
+        Use only the following pieces of context to answer the question. Make sure to address all aspects of the question. Don't make up any new information:
+        {'\n'.join([f' - {chunk}' for chunk, similarity in unique_retrieved_knowledge])}
+        '''
+        
+        stream = ollama.chat(
+            model=LANGUAGE_MODEL,
+            messages=[
+                {'role': 'system', 'content': instruction_prompt},
+                {'role': 'user', 'content': query},
+            ],
+            stream=True,
+        )
+        
+        print('\nChatbot response:')
+        for chunk in stream:
+            print(chunk['message']['content'], end='', flush=True)
+    except Exception as e:
+        print(f"Error processing query: {str(e)}")
+        print("Make sure Ollama is running and the models are pulled. Try running:")
+        print("ollama pull nomic-embed-text")
+        print("ollama pull llama2")
 
 def main():
     # Example usage
