@@ -18,6 +18,12 @@ A requirements.txt file with all necessary dependencies
 
 Install the required dependencies: pip install -r requirements.txt
 
+Make sure Ollama is running on your system
+Pull the required models by running these commands in your terminal:
+
+ollama pull nomic-embed-text
+ollama pull llama2
+
 Install Tesseract OCR on your system:
 For macOS: brew install tesseract
 For Ubuntu/Debian: sudo apt-get install tesseract-ocr
